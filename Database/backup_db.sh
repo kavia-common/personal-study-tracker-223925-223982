@@ -6,7 +6,7 @@
 DB_NAME="myapp"
 DB_USER="appuser"
 DB_PASSWORD="dbuser123"
-DB_PORT="5000"
+DB_PORT="5001"
 
 # SQLite check and backup
 if [ -f "${DB_NAME}" ]; then

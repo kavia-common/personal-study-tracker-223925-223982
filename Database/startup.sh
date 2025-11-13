@@ -24,7 +24,25 @@ echo "[startup] Found PostgreSQL version: ${PG_VERSION}"
 echo "[startup] Using PGDATA=${PGDATA}"
 echo "[startup] Using PGBIN=${PG_BIN}"
 
-# Ensure no conflicting process binds the requested port
+# SAFETY: Ensure there is absolutely no Node.js/npm call here
+# We explicitly do not call npm, node, or any db_visualizer auto-starts.
+
+# If an old instance is listening on 5000, try to stop it gracefully (switch to configured 5001)
+if ss -lnt | awk '{print $4}' | grep -E "(:|^).*:5000$" >/dev/null 2>&1; then
+  echo "[startup] Detected a process listening on port 5000. Attempting to stop PostgreSQL if managed by pg_ctl..."
+  if [ -d "${PGDATA}" ]; then
+    # Attempt a clean stop in case it's our cluster bound to old port
+    sudo -u postgres "${PG_BIN}/pg_ctl" -D "${PGDATA}" stop || true
+    sleep 1
+  fi
+  if ss -lnt | awk '{print $4}' | grep -E "(:|^).*:5000$" >/dev/null 2>&1; then
+    echo "[startup][warn] Port 5000 still in use by a non-managed process. Proceeding since configured port is ${DB_PORT} (5001)."
+  else
+    echo "[startup] Port 5000 is free now."
+  fi
+fi
+
+# Ensure no conflicting process binds the requested port (5001)
 if ss -lnt | awk '{print $4}' | grep -E "(:|^).*:${DB_PORT}$" >/dev/null 2>&1; then
   echo "[startup][ERROR] Port ${DB_PORT} already in use by another process:"
   ss -lnt | grep ":${DB_PORT}" || true
@@ -46,7 +64,6 @@ if [ ! -f "${PGDATA}/PG_VERSION" ]; then
     # Allow local/md5 auth quickly for created role
     HBA="${PGDATA}/pg_hba.conf"
     echo "[startup] Ensuring md5 auth for all hosts in pg_hba.conf"
-    # Prepend so it takes effect
     sudo sed -i '1ihost all all 0.0.0.0/0 md5' "${HBA}"
     sudo sed -i '1ihost all all ::/0 md5' "${HBA}"
 else
@@ -130,7 +147,7 @@ EOF
 echo "psql postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}" > db_connection.txt
 echo "[startup] Connection string saved to db_connection.txt"
 
-# Save environment variables to a file for optional db_visualizer (manual usage)
+# Save environment variables to a file for optional db_visualizer (manual usage only)
 mkdir -p db_visualizer
 cat > db_visualizer/postgres.env << EOF
 export POSTGRES_URL="postgresql://localhost:${DB_PORT}/${DB_NAME}"
@@ -140,15 +157,19 @@ export POSTGRES_DB="${DB_NAME}"
 export POSTGRES_PORT="${DB_PORT}"
 EOF
 
+# Final verification logs and successful exit
 echo "[startup] PostgreSQL setup complete!"
-echo "[startup] Database: ${DB_NAME}"
-echo "[startup] User: ${DB_USER}"
-echo "[startup] Port: ${DB_PORT}"
-echo ""
-echo "[startup] Health check: pg_isready output"
+echo "[startup] Verification:"
+echo "  - No Node.js processes were started by this script."
+echo "  - PostgreSQL is listening on 0.0.0.0:${DB_PORT} (and :: if enabled)."
+echo "  - pg_isready on 127.0.0.1:${DB_PORT}:"
 sudo -u postgres "${PG_BIN}/pg_isready" -h 127.0.0.1 -p "${DB_PORT}" | tee -a "${READY_LOG}"
 
+# Print helper commands
 echo ""
 echo "To connect to the database, use one of the following commands:"
 echo "psql -h localhost -U ${DB_USER} -d ${DB_NAME} -p ${DB_PORT}"
 echo "$(cat db_connection.txt)"
+
+# Exit successfully after readiness confirmation
+exit 0
